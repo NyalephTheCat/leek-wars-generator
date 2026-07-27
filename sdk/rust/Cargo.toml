@@ -1,0 +1,18 @@
+# Cargo workspace for the Leek Wars Rust AI SDK.
+#
+# `leekwars` is the player-facing crate (the Rust counterpart of the injected
+# object preludes `objects.js` / `objects.py`). `examples/dummy` is a minimal AI
+# used as the Phase-0 ABI-validation artifact.
+[workspace]
+resolver = "2"
+members = ["leekwars", "examples/dummy"]
+
+# Deterministic, small wasm output. `panic = "abort"` because there is no unwinder
+# on wasm32-unknown-unknown; `opt-level = "s"` and `strip` keep the module compact
+# and stable across builds (see the reproducibility notes in the plan, Phase 3/5).
+[profile.release]
+panic = "abort"
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = true

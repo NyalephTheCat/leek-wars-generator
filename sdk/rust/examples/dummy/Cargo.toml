@@ -1,0 +1,11 @@
+[package]
+name = "dummy-ai"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+# cdylib -> the final .wasm module the generator loads.
+crate-type = ["cdylib"]
+
+[dependencies]
+leekwars = { path = "../../leekwars" }

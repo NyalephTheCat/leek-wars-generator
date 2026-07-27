@@ -1,0 +1,11 @@
+[package]
+name = "leekwars"
+version = "0.1.0"
+edition = "2021"
+description = "Rust SDK for writing Leek Wars combat AIs, compiled to WebAssembly."
+license = "MIT"
+
+[lib]
+# rlib so player crates can depend on it; the player crate itself is the cdylib
+# that produces the final .wasm module.
+crate-type = ["rlib"]
