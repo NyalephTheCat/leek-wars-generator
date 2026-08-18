@@ -85,5 +85,55 @@ Un combat local est décrit par un JSON (fermiers, équipes, entités avec leur 
 carte, seed…). Voir `test/scenario/scenario1.json` pour un exemple 2v2 complet ; le champ
 `ai` de chaque entité pointe un fichier `.leek`, `.js` ou `.py`.
 
+## Profiler une IA (flamegraph)
+
+Le générateur sait produire un **flamegraph des IA exécutées, pondéré par le coût en
+opérations** — pas par le temps. C'est le compteur d'opérations qui est la ressource
+facturée au joueur, et il est déterministe : le même combat rejoué depuis sa seed donne le
+même profil, contrairement à un profil temporel qui mesurerait surtout le JIT.
+
+```sh
+java -jar generator.jar --profile test/scenario/scenario-profile.json      # -> profile/
+java -jar generator.jar --profile=/tmp/prof test/scenario/scenario-profile.json
+```
+
+Chaque combat écrit `<dossier>/fight-<id>/` :
+
+| Fichier | Contenu |
+|---|---|
+| `entity-<id>-<nom>.folded` | un profil par IA, au format *folded stacks* |
+| `merged.folded` | les mêmes, fusionnés (une tour par entité) |
+| `turns.csv` | `entity_id,entity_name,turn,ops,wall_ns` — le coût tour par tour |
+| `summary.txt` | totaux, nombre de contextes d'appel, drapeau de troncature |
+
+Une ligne *folded* est une pile d'appels et son coût **propre** en opérations :
+
+```
+Patrick#0;strategy.leek:play;strategy.leek:bestEnemy;strategy.leek:distanceScore 28920
+```
+
+À rendre avec n'importe quel outil du format :
+
+```sh
+flamegraph.pl --countname ops profile/fight-0/merged.folded > flame.svg
+# ou déposer merged.folded sur https://speedscope.app
+```
+
+Le profil couvre **tout le combat**, pas un tour : le compteur d'opérations est remis à zéro
+à chaque tour, l'arbre des contextes d'appel, lui, est conservé. Le travail d'une invocation
+apparaît comme sa propre tour, dans l'arbre de son invocateur — c'est là que ses opérations
+sont réellement facturées.
+
+Le mode profil est un **outil de développement** :
+
+- il instrumente le code généré (entrée/sortie de fonction), donc il n'utilise pas le cache
+  disque des classes compilées et ne le pollue pas ;
+- il ne consomme **aucune opération ni RAM joueur** : il lit le compteur, il ne l'alimente
+  pas. Un combat profilé facture exactement comme un combat normal — un test le vérifie ;
+- pour les IA JavaScript / Python, il relâche la policy sandbox GraalVM de `ISOLATED` à
+  `TRUSTED` + `spawnIsolate(true)` (seul moyen d'attacher un `ExecutionListener`, interdit
+  sous `ISOLATED`). L'isolate, l'image native des langages et les caps mémoire par contexte
+  sont conservés, mais **à ne jamais activer en production**.
+
 ## Credits
 Developed by Dawyde & Pilow © 2012-2026

@@ -20,6 +20,8 @@ import java.util.concurrent.TimeoutException;
 import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.Engine;
 import org.graalvm.polyglot.SandboxPolicy;
+import org.graalvm.polyglot.management.ExecutionEvent;
+import org.graalvm.polyglot.management.ExecutionListener;
 import org.graalvm.polyglot.Value;
 import org.graalvm.polyglot.io.IOAccess;
 
@@ -150,6 +152,39 @@ public class PolyglotSandbox implements AutoCloseable {
 	 * propre Context (globals separes) avec son propre cap {@code sandbox.MaxHeapMemory}.
 	 */
 	private static final Map<String, Engine> ENGINES = new ConcurrentHashMap<>();
+
+	/**
+	 * Mode profil (outil de developpement, cf Generator.setProfileDir). Il relache la policy
+	 * sandbox de ISOLATED a TRUSTED + {@code spawnIsolate(true)} : l'isolate, l'image native des
+	 * langages, l'instrument StatementCounter et les caps {@code sandbox.MaxHeapMemory} /
+	 * {@code MaxStatements} sont conserves (verifie), mais la policy relachee autorise enfin
+	 * l'attachement d'un {@link ExecutionListener} — interdit sous ISOLATED comme sous
+	 * CONSTRAINED ("execution listeners are not allowed"). C'est ce listener, en granularite
+	 * RACINE, qui donne les entrees/sorties de fonction guest du flamegraph.
+	 *
+	 * <p>A NE JAMAIS ACTIVER EN PRODUCTION : TRUSTED desactive la validation stricte de la
+	 * policy, et le cout d'un aller-retour hote par appel de fonction guest est prohibitif.
+	 */
+	private static volatile boolean PROFILING = false;
+
+	/**
+	 * Un listener racine par langage, attache une seule fois. Il vit aussi longtemps que
+	 * l'engine de profil, lui-meme statique et partage par la JVM (cf ENGINES).
+	 */
+	private static final Map<String, ExecutionListener> PROFILE_LISTENERS = new ConcurrentHashMap<>();
+
+	public static void setProfiling(boolean profiling) {
+		PROFILING = profiling;
+	}
+
+	public static boolean isProfiling() {
+		return PROFILING;
+	}
+
+	/** Policy du mode courant : relachee en profil pour autoriser le listener d'execution. */
+	private static SandboxPolicy sandboxPolicy() {
+		return PROFILING ? SandboxPolicy.TRUSTED : SandboxPolicy.ISOLATED;
+	}
 	private final List<Context> contexts = Collections.synchronizedList(new ArrayList<>());
 
 	public PolyglotSandbox(String... languages) {
@@ -209,7 +244,11 @@ public class PolyglotSandbox implements AutoCloseable {
 	 * </ul>
 	 */
 	private Engine engineFor(String languageId) {
-		return ENGINES.computeIfAbsent(languageId, lang -> {
+		// Cle differenciee : un engine de profil (policy relachee + listener attache) ne doit
+		// jamais etre resservi a un combat normal, ni l'inverse — ENGINES est statique et
+		// partage par toute la JVM.
+		var engine = ENGINES.computeIfAbsent(languageId + (PROFILING ? ":profile" : ""), key -> {
+			var lang = languageId;
 			// L'image isolate combinee (js+python) embarque l'instrument pour TOUS ses langages ;
 			// si une image officielle (sans instrument) est revenue, l'echelle de replis ci-dessous
 			// retire simplement l'option.
@@ -237,14 +276,58 @@ public class PolyglotSandbox implements AutoCloseable {
 				}
 			}
 		});
+		if (PROFILING) {
+			attachProfileListener(languageId, engine);
+		}
+		return engine;
+	}
+
+	/**
+	 * Attache (une fois par engine) le listener d'execution en granularite RACINE : chaque
+	 * entree/sortie de fonction guest devient une frame du flamegraph. Les racines sont ~2 a 3
+	 * ordres de grandeur plus rares que les statements — c'est ce qui rend viable un listener
+	 * hote la ou l'attacher aux statements serait redhibitoire (cf POLYGLOT_CUSTOM_ISOLATE_SPIKE).
+	 */
+	private static void attachProfileListener(String languageId, Engine engine) {
+		PROFILE_LISTENERS.computeIfAbsent(languageId, lang -> ExecutionListener.newBuilder()
+				.roots(true)
+				.onEnter(event -> PolyglotEntityAI.profileEnter(frameLabel(event)))
+				.onReturn(event -> PolyglotEntityAI.profileExit())
+				.attach(engine));
+	}
+
+	/**
+	 * Libelle de frame guest : « source:fonction », homogene avec le cote LeekScript.
+	 *
+	 * <p>Les sources evaluees via {@code context.eval(languageId, String)} n'ont pas de nom
+	 * (« Unnamed ») : IA du joueur comme prelude. On omet alors le prefixe plutot que d'ecrire
+	 * un nom faux — la place de la frame dans la pile reste, elle, parfaitement lisible.
+	 */
+	private static String frameLabel(ExecutionEvent event) {
+		var name = event.getRootName();
+		if (name == null || name.isEmpty()) name = "#anonymous";
+		// GraalJS nomme la racine d'un module/script « :program ».
+		if (name.startsWith(":")) name = "#" + name.substring(1);
+		var location = event.getLocation();
+		var source = location == null || location.getSource() == null ? null : location.getSource().getName();
+		if (source == null || source.isEmpty() || "Unnamed".equals(source)) {
+			return name;
+		}
+		return source + ":" + name;
 	}
 
 	private Engine buildEngine(String languageId, boolean externalIsolate, boolean withCounter) {
 		Engine.Builder builder = Engine.newBuilder(languageId)
-				.sandbox(SandboxPolicy.ISOLATED)
+				.sandbox(sandboxPolicy())
 				.option("engine.MaxIsolateMemory", memoryOption(MAX_ISOLATE_MEMORY))
 				.out(OutputStream.nullOutputStream())
 				.err(OutputStream.nullOutputStream());
+		if (PROFILING) {
+			// TRUSTED n'implique plus l'isolate : on le redemande explicitement pour garder
+			// l'image native des langages (aucun artefact -community n'est au classpath) et les
+			// caps memoire par contexte.
+			builder.spawnIsolate(true);
+		}
 		if (externalIsolate) {
 			builder.allowExperimentalOptions(true).option("engine.IsolateMode", "external");
 		}
@@ -305,7 +388,7 @@ public class PolyglotSandbox implements AutoCloseable {
 	public Context createContext(String languageId, PolyglotFileSystem fileSystem, long maxHeapBytes) {
 		Context.Builder builder = Context.newBuilder(languageId)
 				.engine(engineFor(languageId))
-				.sandbox(SandboxPolicy.ISOLATED)
+				.sandbox(sandboxPolicy())
 				.allowCreateThread(false)
 				.allowNativeAccess(false)
 				.allowCreateProcess(false)

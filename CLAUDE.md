@@ -32,6 +32,17 @@ gradle --offline :test --tests "test.TestXxx"       # un fichier
 aussi, qui n'a aucun test correspondant, et échoue sur
 `No tests found for given includes` — un faux négatif déroutant.
 
+## Profilage des IA
+
+`--profile[=dossier]` produit un **flamegraph pondéré par les opérations** (pas par le temps),
+sur un combat entier. Voir le README pour l'usage.
+
+Invariant à ne jamais casser : le profileur **lit** `AI.mOperations`, il ne l'alimente jamais.
+Un combat profilé doit facturer exactement comme un combat normal (`TestProfiler.
+profilingDoesNotChangeTheFight`), sinon la compatibilité de relecture saute. `ops()` n'est pas
+touché : les coûts propre et inclusif sont reconstruits à partir des seules entrées/sorties de
+fonction.
+
 ## Préludes polyglot
 
 `objects.js` et `objects.py` sont **deux miroirs maintenus à la main** (~1400 lignes au total) :

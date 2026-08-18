@@ -161,6 +161,29 @@ public class Fight {
 		return true;
 	}
 
+	/** Profileur du combat, ou null hors mode profil (cf Generator.setProfileDir). */
+	private com.leekwars.generator.profile.FightProfiler profiler = null;
+
+	public com.leekwars.generator.profile.FightProfiler getProfiler() {
+		return profiler;
+	}
+
+	/**
+	 * Écrit les profils du combat. Jamais bloquant : un profil est un outil de développement, il
+	 * ne doit pas faire échouer un combat.
+	 */
+	private void writeProfile() {
+		if (profiler == null || profiler.isEmpty()) return;
+		var dir = generator.getProfileDir();
+		if (dir == null) return;
+		try {
+			var written = profiler.write(dir, getId());
+			Log.s(TAG, "Profil ecrit dans " + written.toAbsolutePath());
+		} catch (Exception e) {
+			Log.e(TAG, "Ecriture du profil impossible : " + e);
+		}
+	}
+
 	public void startFight(boolean drawCheckLife) throws Exception {
 
 		initFight();
@@ -173,6 +196,13 @@ public class Fight {
 			((EntityAI) ai).setFight(this);
 			((EntityAI) ai).init();
 			((EntityAI) ai).getRandom().seed(state.getSeed());
+
+			// Enregistre a la construction : finishFight supprime les invocations avant la fin,
+			// un parcours des entites survivantes raterait des IA.
+			if (generator.isProfiling()) {
+				if (profiler == null) profiler = new com.leekwars.generator.profile.FightProfiler();
+				profiler.register(entity, (EntityAI) ai);
+			}
 
 			// Check all entities characteristics
 			state.statistics.init(entity);
@@ -223,6 +253,9 @@ public class Fight {
 			listener.newTurn(this);
 		}
 		state.getActions().addOpsAndTimes(state.statistics);
+
+		// Avant closePolyglotSandbox : le profil polyglot vit dans l'Engine/le contexte.
+		writeProfile();
 
 		// Apres les hooks afterFight : on libere le sandbox polyglot (Engine + contextes).
 		// Generator.runFight le refait dans un finally pour couvrir le chemin de crash.
@@ -378,6 +411,9 @@ public class Fight {
 					state.statistics.addTimes(current, endTime - startTime, ai.operations());
 					executionTime += endTime - startTime;
 					current.addOperations(ai.operations());
+					if (profiler != null) {
+						profiler.recordTurn(current, state.getOrder().getTurn(), endTime - startTime);
+					}
 				} else {
 					// Add 'crash' action if AI is invalid
 					if (getTurn() == 1) {

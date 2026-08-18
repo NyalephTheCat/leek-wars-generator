@@ -389,6 +389,9 @@ public class PolyglotEntityAI extends EntityAI {
 			PolyglotEntityAI ai = new PolyglotEntityAI(languageId, source, entryPath, fs, sandbox);
 			ai.setEntity(entity);
 			ai.setLogs((LeekLog) entity.getLogs());
+			if (generator.isProfiling()) {
+				ai.setProfiler(new leekscript.runner.Profiler());
+			}
 			return ai;
 		} catch (Exception e) {
 			generator.exception(e, (Fight) entity.getFight(), entity.getFarmer(), file);
@@ -1018,6 +1021,46 @@ public class PolyglotEntityAI extends EntityAI {
 			+ "    sys.modules['_datetime'] = sys.modules['datetime']\n";
 	}
 
+	/**
+	 * IA polyglot en cours d'execution sur ce thread, cible des evenements du listener racine
+	 * attache a l'engine (cf PolyglotSandbox). Un engine est partage par toute la JVM : sans ce
+	 * relais, un evenement ne saurait pas a quel poireau l'imputer.
+	 */
+	private static final ThreadLocal<PolyglotEntityAI> PROFILED = new ThreadLocal<>();
+
+	/** Entree de fonction guest, relayee par le listener d'execution de l'engine. */
+	public static void profileEnter(String label) {
+		var ai = PROFILED.get();
+		if (ai == null) return;
+		var profiler = ai.getProfiler();
+		if (profiler != null) profiler.enter(profiler.internFrame(label), ai.profileWeight());
+	}
+
+	/** Sortie de fonction guest, relayee par le listener d'execution de l'engine. */
+	public static void profileExit() {
+		var ai = PROFILED.get();
+		if (ai == null) return;
+		var profiler = ai.getProfiler();
+		if (profiler != null) profiler.exit(ai.profileWeight());
+	}
+
+	/**
+	 * Poids d'une frame guest, en operations LeekScript, monotone a l'interieur d'un tour :
+	 * statements guest calibres ({@code opsFactor}) PLUS le compteur hote. Le second terme est
+	 * indispensable : les fonctions de combat et les builtins couteux passent par
+	 * {@code __lw_charge} et ne facturent QUE l'hote — sans lui, {@code useWeapon} ou un
+	 * {@code sort} apparaitraient gratuits dans le flamegraph.
+	 */
+	private long profileWeight() {
+		long host = super.getOperations();
+		if (statementCounter == null) return host;
+		try {
+			return host + (long) (statementCounter.execute().asLong() * opsFactor);
+		} catch (Exception e) {
+			return host;
+		}
+	}
+
 	@Override
 	public Object runIA(Session session) throws LeekRunException {
 		if (disabled) {
@@ -1029,6 +1072,7 @@ public class PolyglotEntityAI extends EntityAI {
 		// la premiere ligne du joueur, surtout en Python (importlib). Sans ce mapping, l'annulation
 		// remontait BRUTE jusqu'a EntityAI -> combat plante + rapport d'erreur serveur, pour une erreur
 		// qui appartient au joueur. On la traduit ici comme n'importe quelle limite atteinte en cours de tour.
+		if (getProfiler() != null) PROFILED.set(this);
 		try {
 			ensureContext();
 			resetStatementCounter(); // compteur de statements guest remis a zero a chaque tour (terme deterministe)
@@ -1037,8 +1081,10 @@ public class PolyglotEntityAI extends EntityAI {
 			// guest persistant) mais le statement limit GraalVM est cumulatif sur la vie du contexte.
 			context.resetLimits();
 		} catch (PolyglotException e) {
+			PROFILED.remove(); // le tour n'a pas commence : ne pas laisser le relais pointer ici
 			throw mapException(e);
 		} catch (Throwable t) {
+			PROFILED.remove();
 			if (!PolyglotSandbox.isMemoryExhaustion(t)) {
 				throw t; // erreur moteur inconnue : on ne la masque pas
 			}
@@ -1131,6 +1177,7 @@ public class PolyglotEntityAI extends EntityAI {
 			// suivant) et SUBSTITUE un depassement a l'issue du tour. Le throw depuis le finally n'est PAS
 			// re-capturable par les catch ci-dessus -> pas de double comptage.
 			snapshotTurnOperations(); // avant la resolution de la course : elle peut lever
+			PROFILED.remove();
 			if (!winRace(settled, watchdog)) {
 				throw onWallClockTimeout();
 			}
