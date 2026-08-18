@@ -219,12 +219,78 @@ public class TestProfiler extends FightTestBase {
 		leek.setBirthTurn(1);
 	}
 
+	/**
+	 * Une invocation exécute la fonction d'IA de son invocateur SUR l'objet AI de celui-ci :
+	 * ses opérations sont facturées à l'invocateur, et son profil vit donc dans l'arbre de
+	 * l'invocateur — sous une frame racine à son propre nom.
+	 */
+	@Test
+	public void summonWorkAppearsAsItsOwnTowerInTheSummonerTree() throws Exception {
+		Path dir = Files.createTempDirectory("lw-profile-summon");
+		profile(dir);
+		var bulb = com.leekwars.generator.chips.Chips.getChip(73); // puny_bulb (niveau 48, 6 PT)
+		Assert.assertNotNull("la puce d'invocation doit exister dans le catalogue", bulb);
+		leek1.setLevel(300); // la puce a un niveau requis
+		leek1.addChip(bulb);
+		attachAI(leek1,
+			"function bulbBrain() { var s = 0; for (var i = 0; i < 100; i++) { s += i; } return s; }"
+			+ "if (getTurn() == 1) {"
+			+ "  var free = null;"
+			+ "  for (var i = 0; i < 613; i++) {"
+			+ "    if (free == null && isEmptyCell(i) && getCellDistance(getCell(), i) == 1) { free = i; }"
+			+ "  }"
+			+ "  if (free != null) { setRegister('summoned', '' + summon(CHIP_PUNY_BULB, free, bulbBrain)); }"
+			+ "}");
+		attachAI(leek2, "1;");
+		runFight();
+
+		Assert.assertTrue("l'invocation doit avoir ete creee, registres : " + registerStore.get(leek1.getId()),
+			String.valueOf(registerStore.get(leek1.getId())).contains("summoned"));
+
+		var profiler = profilerOf(leek1);
+		var folded = folded(profiler);
+		Assert.assertTrue("le travail de l'invocation doit apparaitre : " + folded,
+			folded.contains(":bulbBrain"));
+		// Sa tour racine porte le nom de l'invocation, jamais celui de l'invocateur : c'est ce
+		// qui permet de lui donner son propre fichier.
+		Assert.assertTrue("l'invocation doit former sa propre tour : " + folded,
+			java.util.Arrays.stream(folded.split("\n"))
+				.anyMatch(l -> l.contains(":bulbBrain") && !l.startsWith(leek1.getName() + "#")));
+		// La tour de l'invocateur, elle, ne contient QUE son travail a lui.
+		Assert.assertEquals("le profil de l'invocateur seul == ce qui lui est facture",
+			leek1.getTotalOperations(),
+			profiler.getSelfOps(label -> label.equals(EntityAI.profileLabel(leek1))));
+
+		// Et l'invocation obtient bien SON fichier, malgre un profil hebergé par son maitre.
+		var out = dir.resolve("fight-" + fight.getId());
+		var summonFiles = Files.list(out)
+			.filter(f -> f.getFileName().toString().endsWith(".folded"))
+			.filter(f -> !f.getFileName().toString().startsWith("merged"))
+			.filter(f -> {
+				try { return Files.readString(f).contains(":bulbBrain"); } catch (Exception e) { return false; }
+			})
+			.toList();
+		Assert.assertEquals("un seul fichier doit porter le travail de l'invocation : " + summonFiles,
+			1, summonFiles.size());
+		Assert.assertFalse("et ce n'est pas celui de l'invocateur",
+			summonFiles.get(0).getFileName().toString().contains(leek1.getName()));
+	}
+
 	@Test
 	public void noProfilerWithoutTheFlag() throws Exception {
 		attachAI(leek1, AI);
 		attachAI(leek2, "1;");
 		runFight();
 		Assert.assertNull("aucun profileur ne doit être installé hors mode profil", profilerOf(leek1));
+	}
+
+	private static String dumpTree(Profiler p, Profiler.Node n, String indent) {
+		var sb = new StringBuilder();
+		sb.append("\n").append(indent).append(p.getLabel(n.getFrameId()))
+			.append(" calls=").append(n.getCalls()).append(" self=").append(n.getSelfOps())
+			.append(" incl=").append(n.getInclusiveOps());
+		for (var c : n.getChildren()) sb.append(dumpTree(p, c, indent + "  "));
+		return sb.toString();
 	}
 
 	private static String folded(Profiler profiler) throws Exception {

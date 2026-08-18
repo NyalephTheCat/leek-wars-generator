@@ -7,8 +7,10 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.IdentityHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import com.leekwars.generator.fight.entity.EntityAI;
 import com.leekwars.generator.state.Entity;
@@ -18,9 +20,14 @@ import leekscript.runner.Profiler;
 /**
  * Collecte les profils d'un combat et les écrit au format <i>folded stacks</i>.
  *
- * <p>Les IA profilées sont enregistrées à leur construction plutôt que retrouvées en fin de
- * combat : {@code Fight.finishFight} supprime les invocations avant la fin, et un parcours des
- * entités survivantes raterait des IA.
+ * <p>Les IA sont enregistrées à leur construction plutôt que retrouvées en fin de combat :
+ * {@code Fight.finishFight} supprime les invocations avant la fin, et un parcours des entités
+ * survivantes en raterait.
+ *
+ * <p><b>Un fichier par entité.</b> Une invocation exécute la fonction d'IA de son invocateur
+ * <em>sur l'objet AI de celui-ci</em> : ses opérations et ses frames atterrissent donc dans
+ * l'arbre de l'invocateur. Elles y forment néanmoins leur propre tour racine, à son nom, ce qui
+ * permet de redécouper l'arbre et de donner à chaque entité son flamegraph.
  */
 public class FightProfiler {
 
@@ -32,17 +39,23 @@ public class FightProfiler {
 	/** Dernier total lu par profileur, pour calculer le delta d'un tour. */
 	private final Map<Profiler, Long> lastTotals = new IdentityHashMap<>();
 
-	private record Entry(Entity entity, EntityAI ai) {}
+	/** L'entité, le profileur qui porte son profil (celui de son maître pour une invocation)
+	 *  et le libellé de sa tour racine dans cet arbre. */
+	private record Entry(Entity entity, Profiler profiler, String rootLabel, boolean ownsTree) {}
 
-	/** Enregistre une IA qui porte son propre profil (les invocations écrivent chez leur maître). */
+	/** Enregistre une entité dont le travail sera profilé. Sans effet hors mode profil. */
 	public void register(Entity entity, EntityAI ai) {
-		if (ai == null || ai.getProfiler() == null) return;
-		entries.add(new Entry(entity, ai));
+		if (entity == null || ai == null) return;
+		var profiler = ai.profileHost().getProfiler();
+		if (profiler == null) return;
+		// ownsTree : l'IA porte son propre arbre. Faux pour une invocation, qui n'a qu'une tour
+		// racine dans l'arbre de son maitre — et ne doit donc pas hériter des racines de hooks.
+		entries.add(new Entry(entity, profiler, EntityAI.profileLabel(entity), ai.getProfiler() != null));
 	}
 
 	/**
-	 * Enregistre le coût d'un tour. Le delta est lu sur le profileur <i>hôte</i> : le travail
-	 * d'une invocation est facturé au compteur de son maître, pas au sien.
+	 * Enregistre le coût d'un tour. Le delta est lu sur le profileur <i>hôte</i> : pendant le
+	 * tour d'une invocation, lui seul avance.
 	 */
 	public void recordTurn(Entity entity, int turn, long wallNanos) {
 		var ai = entity.getAI();
@@ -64,16 +77,25 @@ public class FightProfiler {
 		var dir = root.resolve("fight-" + fightId);
 		Files.createDirectories(dir);
 
+		// Les tours racines des AUTRES entités : à exclure du fichier d'une entité, sinon le
+		// profil d'un invocateur contiendrait aussi celui de ses invocations.
+		Set<String> allRoots = new LinkedHashSet<>();
+		for (var entry : entries) allRoots.add(entry.rootLabel());
+
+		for (var entry : entries) {
+			var mine = mineOnly(entry, allRoots);
+			try (var out = writer(dir.resolve("entity-" + entry.entity().getFId() + "-" + fileName(entry.entity()) + ".folded"))) {
+				entry.profiler().writeFolded(out, null, mine);
+			}
+		}
+
+		// Fusion : chaque arbre une seule fois (invocateur et invocations le partagent).
 		try (var merged = writer(dir.resolve("merged.folded"))) {
+			Set<Profiler> written = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
 			for (var entry : entries) {
-				var profiler = entry.ai().getProfiler();
-				var name = label(entry.entity());
-				try (var out = writer(dir.resolve("entity-" + entry.entity().getFId() + "-" + name + ".folded"))) {
-					profiler.writeFolded(out, null);
+				if (written.add(entry.profiler())) {
+					entry.profiler().writeFolded(merged, null);
 				}
-				// Pas de préfixe : la frame racine porte déjà le nom de l'entité (et celui de
-				// chaque invocation, dont le profil vit dans l'arbre de son maître).
-				profiler.writeFolded(merged, null);
 			}
 		}
 
@@ -88,27 +110,37 @@ public class FightProfiler {
 		try (var out = writer(dir.resolve("summary.txt"))) {
 			out.write("fight " + fightId + "\n");
 			for (var entry : entries) {
-				var profiler = entry.ai().getProfiler();
-				out.write(String.format("entity %d %s: %d ops, %d contexts%s%n",
-						entry.entity().getFId(), label(entry.entity()),
-						profiler.getTotalSelfOps(), profiler.getNodeCount(),
+				var profiler = entry.profiler();
+				out.write(String.format("entity %d %s: %d ops%s%n",
+						entry.entity().getFId(), entry.rootLabel(),
+						profiler.getSelfOps(mineOnly(entry, allRoots)),
 						profiler.isTruncated() ? " (TRONQUE: plafond de contextes atteint)" : ""));
 			}
-			out.write("\nflamegraph.pl --countname ops merged.folded > flame.svg\n");
-			out.write("ou deposer merged.folded sur https://speedscope.app\n");
+			out.write("\nflamegraph.pl --countname ops entity-<id>-<nom>.folded > flame.svg\n");
+			out.write("merged.folded reunit toutes les entites ; deposable sur https://speedscope.app\n");
 		}
 
 		return dir;
+	}
+
+	/**
+	 * Filtre gardant les tours racines de cette entité : la sienne, plus — pour celle qui porte
+	 * l'arbre — les racines qui n'appartiennent à aucune entité (les hooks, dont la racine
+	 * porte le nom du hook).
+	 */
+	private static java.util.function.Predicate<String> mineOnly(Entry entry, Set<String> allRoots) {
+		return label -> entry.rootLabel().equals(label)
+				|| (entry.ownsTree() && !allRoots.contains(label));
 	}
 
 	private static Writer writer(Path path) throws IOException {
 		return Files.newBufferedWriter(path, StandardCharsets.UTF_8);
 	}
 
-	/** Nom d'entité utilisable en nom de fichier et en libellé de frame. */
-	private static String label(Entity entity) {
+	/** Nom d'entité utilisable en nom de fichier. */
+	private static String fileName(Entity entity) {
 		var name = entity.getName();
 		if (name == null || name.isEmpty()) name = "entity";
-		return name.replaceAll("[^A-Za-z0-9_.#-]", "_") + "#" + entity.getFId();
+		return name.replaceAll("[^A-Za-z0-9_.#-]", "_");
 	}
 }

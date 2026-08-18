@@ -101,7 +101,7 @@ Chaque combat écrit `<dossier>/fight-<id>/` :
 
 | Fichier | Contenu |
 |---|---|
-| `entity-<id>-<nom>.folded` | un profil par IA, au format *folded stacks* |
+| `entity-<id>-<nom>.folded` | **un flamegraph par entité**, au format *folded stacks* |
 | `merged.folded` | les mêmes, fusionnés (une tour par entité) |
 | `turns.csv` | `entity_id,entity_name,turn,ops,wall_ns` — le coût tour par tour |
 | `summary.txt` | totaux, nombre de contextes d'appel, drapeau de troncature |
@@ -120,9 +120,19 @@ flamegraph.pl --countname ops profile/fight-0/merged.folded > flame.svg
 ```
 
 Le profil couvre **tout le combat**, pas un tour : le compteur d'opérations est remis à zéro
-à chaque tour, l'arbre des contextes d'appel, lui, est conservé. Le travail d'une invocation
-apparaît comme sa propre tour, dans l'arbre de son invocateur — c'est là que ses opérations
-sont réellement facturées.
+à chaque tour, l'arbre des contextes d'appel, lui, est conservé.
+
+**Les invocations ont leur propre fichier**, elles aussi. Une invocation exécute la fonction
+d'IA de son invocateur *sur l'objet AI de celui-ci* : ses opérations et ses frames atterrissent
+donc dans l'arbre de l'invocateur. Elles y forment leur propre tour racine, à son nom, ce qui
+permet de redécouper l'arbre — chaque entité a son flamegraph, et celui d'un invocateur ne
+contient que son travail à lui.
+
+> À noter, et c'est le profileur qui le révèle : le rapport de combat, lui, **ne facture le
+> travail d'une invocation à personne**. `Fight.startTurn` lit `ai.operations()` sur le
+> `BulbAI`, dont le compteur reste à zéro, tandis que les opérations réelles s'accumulent sur
+> le compteur de l'invocateur — puis sont effacées par le `resetCounter()` de son tour suivant.
+> Comportement préexistant, non modifié ici.
 
 Le mode profil est un **outil de développement** :
 

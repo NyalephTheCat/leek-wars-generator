@@ -313,7 +313,14 @@ public class EntityAI extends AI {
 	 * travail forme donc sa propre tour du flamegraph, à côté de celui du maître.
 	 */
 	protected String profileRootLabel() {
-		var entity = mEntity != null ? mEntity : mInitialEntity;
+		return profileLabel(mEntity != null ? mEntity : mInitialEntity);
+	}
+
+	/**
+	 * Libellé de la tour racine d'une entité dans l'arbre du profileur. Unique par entité, donc
+	 * exploitable pour redécouper l'arbre d'une IA en un profil par poireau (cf FightProfiler).
+	 */
+	public static String profileLabel(com.leekwars.generator.state.Entity entity) {
 		if (entity == null) return "turn";
 		var name = entity.getName();
 		return (name == null || name.isEmpty() ? "entity" : name) + "#" + entity.getFId();

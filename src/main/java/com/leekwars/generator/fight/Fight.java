@@ -458,6 +458,11 @@ public class Fight {
 			summon.setFight(this);
 			summon.setBirthTurn(getTurn());
 			summon.setAI(new BulbAI(summon, (EntityAI) caster.getAI(), value));
+			// Une invocation profile dans l'arbre de son maitre, mais sous sa propre tour
+			// racine : on l'enregistre pour qu'elle ait, elle aussi, son fichier.
+			if (profiler != null) {
+				profiler.register(summon, (EntityAI) summon.getAI());
+			}
 		}
 
 		return result;
