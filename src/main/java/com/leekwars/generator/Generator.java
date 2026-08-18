@@ -46,6 +46,9 @@ public class Generator {
 
 	public boolean use_leekscript_cache = true;
 
+	/** Dossier de sortie des profils, ou null hors mode profil. */
+	private java.nio.file.Path profileDir = null;
+
 	public Generator() {
 		new File("ai/").mkdir();
 		LeekFunctions.setExtraFunctions(FightFunctions.getFunctions(), "com.leekwars.generator.classes.*");
@@ -323,6 +326,27 @@ public class Generator {
 
 	public void setCache(boolean cache) {
 		this.use_leekscript_cache = cache;
+	}
+
+	/**
+	 * Active le profilage des IA (flamegraph pondéré par les opérations) et fixe le dossier de
+	 * sortie. Mode développeur : il change le code généré, donc il force aussi l'abandon du
+	 * cache disque des classes compilées.
+	 */
+	public void setProfileDir(java.nio.file.Path dir) {
+		this.profileDir = dir;
+		if (dir != null) this.use_leekscript_cache = false;
+		// Les engines polyglot sont statiques et partages par la JVM : le mode se pose une fois,
+		// avant la creation du premier engine (cf PolyglotSandbox.engineFor).
+		com.leekwars.generator.polyglot.PolyglotSandbox.setProfiling(dir != null);
+	}
+
+	public java.nio.file.Path getProfileDir() {
+		return profileDir;
+	}
+
+	public boolean isProfiling() {
+		return profileDir != null;
 	}
 
 	/**

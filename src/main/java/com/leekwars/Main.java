@@ -27,6 +27,7 @@ public class Main {
 		boolean analyze = false;
 		int farmer = 0;
 		int folder = 0;
+		String profileDir = null;
 
 		for (String arg : args) {
 			if (arg.startsWith("--")) {
@@ -35,11 +36,14 @@ public class Main {
 					case "dbresolver": db_resolver = true; break;
 					case "verbose": verbose = true; break;
 					case "analyze": analyze = true; break;
+					case "profile": profileDir = "profile"; break;
 				}
 				if (arg.startsWith("--farmer=")) {
 					farmer = Integer.parseInt(arg.substring("--farmer=".length()));
 				} else if (arg.startsWith("--folder=")) {
 					folder = Integer.parseInt(arg.substring("--folder=".length()));
+				} else if (arg.startsWith("--profile=")) {
+					profileDir = arg.substring("--profile=".length());
 				}
 			} else {
 				file = arg;
@@ -61,6 +65,11 @@ public class Main {
 		}
 		Generator generator = new Generator();
 		generator.setCache(!nocache);
+		// Apres setCache : le profilage instrumente le code genere, il impose donc de ne pas
+		// servir (ni ecrire) les classes du cache disque partagees avec les combats normaux.
+		if (profileDir != null) {
+			generator.setProfileDir(java.nio.file.Paths.get(profileDir));
+		}
 		if (analyze) {
 			try {
 				var ai = LeekScript.getFileSystem().getRoot().resolve(file);

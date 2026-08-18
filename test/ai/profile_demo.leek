@@ -1,0 +1,46 @@
+// Fixture de profilage : plusieurs fonctions de coûts très différents, pour que le
+// flamegraph produit ait quelque chose à montrer.
+
+function distanceScore(cell) {
+	var score = 0;
+	for (var i = 0; i < 40; i++) {
+		score += getCellDistance(cell, getCell());
+	}
+	return score;
+}
+
+function cheapPick(enemies) {
+	return enemies[0];
+}
+
+function bestEnemy() {
+	var enemies = getAliveEnemies();
+	if (count(enemies) == 0) {
+		return null;
+	}
+	var best = null;
+	var bestScore = -1;
+	for (var enemy in enemies) {
+		var score = distanceScore(getCell(enemy));
+		if (score > bestScore) {
+			bestScore = score;
+			best = enemy;
+		}
+	}
+	return best;
+}
+
+function play() {
+	var enemy = bestEnemy();
+	if (enemy == null) {
+		return;
+	}
+	cheapPick(getAliveEnemies());
+	if (count(getWeapons()) > 0) {
+		setWeapon(getWeapons()[0]);
+	}
+	moveToward(enemy);
+	useWeapon(enemy);
+}
+
+play();

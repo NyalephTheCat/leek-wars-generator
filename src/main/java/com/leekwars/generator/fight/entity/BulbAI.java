@@ -37,6 +37,16 @@ public class BulbAI extends EntityAI {
 		return null;
 	}
 
+	/**
+	 * L'IA d'une invocation s'exécute sur l'objet AI de son maître ({@code mAIFunction.run(mOwnerAI,
+	 * ...)}) : ses opérations et ses frames y atterrissent, c'est donc le profileur du maître qui
+	 * porte son profil.
+	 */
+	@Override
+	public leekscript.runner.AI profileHost() {
+		return mOwnerAI;
+	}
+
 	@Override
 	public String getErrorMessage(StackTraceElement[] elements) {
 		return mOwnerAI.getErrorMessage(elements);

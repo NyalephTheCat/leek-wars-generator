@@ -183,7 +183,7 @@ public class EntityAI extends AI {
 			synchronized (file) {
 				file.setJavaClass("AI_" + file.getId());
 				file.setRootClass("com.leekwars.generator.fight.entity.EntityAI");
-				var options = new Options(file.getVersion(), file.isStrict(), generator.use_leekscript_cache, true, null, true);
+				var options = new Options(file.getVersion(), file.isStrict(), generator.use_leekscript_cache, true, null, true, generator.isProfiling());
 				ai = (EntityAI) file.compile(options);
 			}
 
@@ -194,6 +194,11 @@ public class EntityAI extends AI {
 			// System.out.println("Coeurs = " + entity.getCores() + " RAM = " + entity.getRAM());
 			ai.setMaxRAM(Math.min(50, entity.getRAM()) * 8_000_000);
 			ai.setMaxOperations(entity.getCores() * 1_000_000);
+			// Le profileur ne consomme ni operations ni RAM joueur : il lit le compteur, il ne
+			// l'alimente pas (cf leekscript.runner.Profiler).
+			if (generator.isProfiling()) {
+				ai.setProfiler(new leekscript.runner.Profiler());
+			}
 			return ai;
 
 		} catch (LeekScriptException e) {
@@ -302,6 +307,25 @@ public class EntityAI extends AI {
 		((LeekLog) logs).setLogs(fight.getState().getActions());
 	}
 
+	/**
+	 * Libellé de la frame racine d'un tour. Pour une invocation, il porte le nom de
+	 * l'invocation alors que les frames sont accumulées dans le profileur de son maître : son
+	 * travail forme donc sa propre tour du flamegraph, à côté de celui du maître.
+	 */
+	protected String profileRootLabel() {
+		return profileLabel(mEntity != null ? mEntity : mInitialEntity);
+	}
+
+	/**
+	 * Libellé de la tour racine d'une entité dans l'arbre du profileur. Unique par entité, donc
+	 * exploitable pour redécouper l'arbre d'une IA en un profil par poireau (cf FightProfiler).
+	 */
+	public static String profileLabel(com.leekwars.generator.state.Entity entity) {
+		if (entity == null) return "turn";
+		var name = entity.getName();
+		return (name == null || name.isEmpty() ? "entity" : name) + "#" + entity.getFId();
+	}
+
 	public void runTurn(int turn) {
 
 		long startTime = System.nanoTime();
@@ -310,8 +334,14 @@ public class EntityAI extends AI {
 
 			resetCounter();
 			mEntity = mInitialEntity;
+			enterRoot(profileRootLabel());
 			if (!staticInitialized) {
-				staticInit();
+				enterRoot("staticInit");
+				try {
+					staticInit();
+				} finally {
+					exitRoot();
+				}
 				staticInitialized = true;
 			}
 			runIA(null);
@@ -403,6 +433,12 @@ public class EntityAI extends AI {
 			throw new RuntimeException("Erreur importante dans l'IA " + id + "  " + e.getMessage(), e);
 		}
 
+		// Ferme la frame racine APRES les catch : le traitement d'une erreur joueur
+		// (addSystemLog, ERROR_LOG_COST) facture encore des operations a l'entite, elles
+		// appartiennent donc au tour. La seule sortie qui saute cette ligne est le rethrow
+		// d'erreur moteur, et le resetCounter du tour suivant remet la pile a zero.
+		exitRoot();
+
 		mSays.clear();
 		mMessages.clear();
 
@@ -462,6 +498,7 @@ public class EntityAI extends AI {
 		try {
 			resetCounter();
 			mEntity = mInitialEntity;
+			enterRoot(name);
 			if (!staticInitialized) {
 				staticInit();
 				staticInitialized = true;
@@ -492,6 +529,7 @@ public class EntityAI extends AI {
 			fight.getState().statistics.error(mEntity);
 			addSystemLog(LeekLog.ERROR, Error.AI_INTERRUPTED, new String[] { String.valueOf(e.getMessage()) }, e.getStackTrace());
 		} finally {
+			exitRoot(); // apres les catch : leur journalisation facture encore des operations
 			hookPhase = HookPhase.NONE;
 			setMaxOperations((int) Math.min((long) Integer.MAX_VALUE, savedMaxOps));
 			long endTime = System.nanoTime();

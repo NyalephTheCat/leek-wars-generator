@@ -20,3 +20,6 @@ id_ed25519*
 .env.local
 .env.*.localdata/fullmoon.json
 src/test/java/test/TestScratch*.java
+
+# Sorties du profileur d'IA (--profile)
+/profile/
